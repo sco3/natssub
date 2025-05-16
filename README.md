@@ -1,7 +1,7 @@
-Ungzips and sends file to nats subject.
+Subscribes to nats jetstream subject
 ---
 
 
 ```
-natssend <subject> <file> [<nats url>]
+natssub <subject> <stream> 
 ```
