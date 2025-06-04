@@ -4,7 +4,8 @@ use futures::StreamExt;
 use log::error;
 use log::info;
 
-use async_nats::jetstream::consumer::DeliverPolicy;
+use async_nats::jetstream::consumer::pull::Config;
+use async_nats::jetstream::consumer::{Consumer, DeliverPolicy};
 use std::env::args;
 use std::error::Error;
 use tokio;
@@ -67,17 +68,26 @@ async fn recv() -> Result<(), Box<dyn Error + Send + Sync>> {
             config.clone(), //
         )
         .await?;
+    serve(consumer).await;
+    Ok(())
+}
+
+async fn serve(consumer: Consumer<Config>) {
     loop {
-        let mut messages = consumer //
+        if let Ok(mut messages) = consumer //
             .fetch()
             .max_messages(1)
             .messages()
-            .await?;
-        while let Some(Ok(message)) = messages.next().await {
-            message.ack().await?;
-            println!("got message {:?}", message.payload);
-            if message.payload == "\0" {
-                break;
+            .await
+        {
+            while let Some(Ok(message)) = messages.next().await {
+                if let Err(e) = message.ack().await {
+                    error!("Ack failed: {}", e);
+                }
+                println!("got message {:?}", message.payload);
+                if message.payload == "\0" {
+                    break;
+                }
             }
         }
     }
