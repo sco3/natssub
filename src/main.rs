@@ -11,7 +11,7 @@ use tokio;
 
 fn help(s: &str) -> String {
     println!("Help: natssub <subject> <stream> [<nats_url>]");
-    return s.to_string();
+    s.to_string()
 }
 
 async fn recv() -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -68,7 +68,11 @@ async fn recv() -> Result<(), Box<dyn Error + Send + Sync>> {
         )
         .await?;
     loop {
-        let mut messages = consumer.messages().await?.take(1);
+        let mut messages = consumer //
+            .fetch()
+            .max_messages(1)
+            .messages()
+            .await?;
         while let Some(Ok(message)) = messages.next().await {
             message.ack().await?;
             println!("got message {:?}", message.payload);
