@@ -7,9 +7,7 @@ use log::info;
 use async_nats::jetstream::consumer::DeliverPolicy;
 use std::env::args;
 use std::error::Error;
-use std::time::Duration;
 use tokio;
-use tokio::time::sleep;
 
 fn help(s: &str) -> String {
     println!("Help: natssub <subject> <stream> [<nats_url>]");
@@ -56,38 +54,29 @@ async fn recv() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     jetstream.update_stream(stream_config).await?;
 
-    let durable = String::from("consumer_new");
+    let durable = String::from(format!("consumer_{subject}"));
     let config = async_nats::jetstream::consumer::pull::Config {
         durable_name: Some(durable.clone()),
         deliver_policy: DeliverPolicy::New,
+        filter_subject: subject.to_string(),
         ..Default::default()
     };
-    let mut consumer = stream
+    let consumer = stream
         .get_or_create_consumer(
             durable.as_str(),
             config.clone(), //
         )
         .await?;
-    for i in 0..8 {
-        info!("New consumer: {}", i);
-        consumer = stream
-            .get_or_create_consumer(
-                durable.as_str(),
-                config.clone(), //
-            )
-            .await?;
-        sleep(Duration::from_secs(1)).await;
-    }
-
-    let mut messages = consumer.messages().await?.take(100);
-    while let Some(Ok(message)) = messages.next().await {
-        message.ack().await?;
-        println!("got message {:?}", message.payload);
-        if message.payload == "\0" {
-            break;
+    loop {
+        let mut messages = consumer.messages().await?.take(1);
+        while let Some(Ok(message)) = messages.next().await {
+            message.ack().await?;
+            println!("got message {:?}", message.payload);
+            if message.payload == "\0" {
+                break;
+            }
         }
     }
-    return Ok(());
 }
 
 #[tokio::main]
