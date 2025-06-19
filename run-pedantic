@@ -1,0 +1,5 @@
+#!/usr/bin/env -S bash
+
+set -xueo pipefail
+
+cargo clippy --no-deps -- -W clippy::all -W clippy::pedantic

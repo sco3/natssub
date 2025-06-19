@@ -6,13 +6,10 @@ use log::{debug, error};
 use log::{info, warn};
 
 use async_nats::jetstream::consumer::pull::Config;
-use async_nats::jetstream::consumer::{Consumer, DeliverPolicy};
+use async_nats::jetstream::consumer::Consumer;
 use async_nats::jetstream::stream::Stream;
 use std::env::args;
-use std::error::Error;
-use std::io::Bytes;
 use std::time::Duration;
-use tokio;
 
 fn help(s: &str) -> String {
     println!("Help: natssub <subject> <stream> [<nats_url>]");
@@ -40,16 +37,13 @@ async fn recv() /*-> Result<(), Box<dyn Error + Send + Sync>>*/
 
     let url = args().nth(3).unwrap_or("nats://localhost:4222".to_string());
 
-    info!(
-        "Subscribe to subject {} from stream {} url {}",
-        subject, stream, url
-    );
+    info!("Subscribe to subject {subject} from stream {stream} url {url}",);
 
     match async_nats::connect(&url).await {
         Ok(client) => {
-            let mut jetstream = async_nats::jetstream::new(client);
+            let jetstream = async_nats::jetstream::new(client);
 
-            let mut subjects = vec![subject.to_string()];
+            let subjects = vec![subject.to_string()];
             let mut stream_config = async_nats::jetstream::stream::Config {
                 name: stream.to_string(),
                 subjects: subjects.clone(),
@@ -65,9 +59,9 @@ async fn recv() /*-> Result<(), Box<dyn Error + Send + Sync>>*/
                             }
                         }
                         if !needs_update {
-                            info!("Stream {} with subjects: {:?} is ready.", stream, subjects);
-                            continue_with_stream(subject, &mut s).await;
-                            return;
+                            info!("Stream {stream} with subjects: {subjects:?} is ready.");
+                            continue_with_stream(subject.clone(), &mut s).await;
+                            // return
                         }
 
                         stream_config = info.config;
@@ -85,7 +79,7 @@ async fn recv() /*-> Result<(), Box<dyn Error + Send + Sync>>*/
                     }
                 },
                 Err(e) => {
-                    info!("Stream not found {:?}, trying create it.", e);
+                    info!("Stream not found {e:?}, trying create it.");
                 }
             }
             // update or create stream
@@ -97,26 +91,26 @@ async fn recv() /*-> Result<(), Box<dyn Error + Send + Sync>>*/
 
                         match jetstream.update_stream(stream_config).await {
                             Ok(updated) => {
-                                debug!("Stream updated: {:?}", updated);
+                                debug!("Stream updated: {updated:?}");
                                 continue_with_stream(subject, &mut stream).await;
-                                return;
+                                //return;
                             }
                             Err(err) => {
-                                error!("Failed to update stream: {}", err);
+                                error!("Failed to update stream: {err:?}");
                             }
                         }
                     }
                     Err(err) => {
-                        error!("Failed to get stream info: {}", err);
+                        error!("Failed to get stream info: {err:?}");
                     }
                 },
                 Err(err) => {
-                    error!("Failed to get or create stream: {}", err);
+                    error!("Failed to get or create stream: {err:?}");
                 }
             }
         }
         Err(e) => {
-            error!("Connect error: {:?}", e);
+            error!("Connect error: {e:?}");
         }
     }
 }
@@ -146,11 +140,11 @@ async fn continue_with_stream(subject: String, js: &mut Stream) {
     match js.get_consumer::<Config>(durable.as_str()).await {
         Ok(c) => {
             info!("Consumer found");
-            info!("Created {:?}", c);
+            info!("Created {c:?}");
             serve(c).await;
         }
         Err(e) => {
-            warn!("Consumer not found: {} {:?}", durable, e);
+            warn!("Consumer not found: {durable} {e:?}");
             let config = async_nats::jetstream::consumer::pull::Config {
                 durable_name: Some(durable.clone()),
                 filter_subject: subject.to_string(),
@@ -158,11 +152,11 @@ async fn continue_with_stream(subject: String, js: &mut Stream) {
             };
             match js.create_consumer(config).await {
                 Ok(c) => {
-                    info!("Created {:?}", c);
+                    info!("Created {c:?}");
                     serve(c).await;
                 }
                 Err(e) => {
-                    error!("Consumer error1 {:?}", e);
+                    error!("Consumer error1 {e:?}");
                 }
             }
         }
@@ -185,12 +179,12 @@ async fn serve(consumer: Consumer<Config>) {
                     info!("...");
                     let payload = &message.payload;
                     let ts = message.info().unwrap().published;
-                    let nanos = ts.unix_timestamp_nanos() / 1000000;
+                    let nanos = ts.unix_timestamp_nanos() / 1_000_000;
                     println!("{} {}", nanos, String::from_utf8_lossy(payload.as_ref()));
                 }
             }
             Err(e) => {
-                error!("Failed to fetch messages: {}", e);
+                error!("Failed to fetch messages: {e:?}");
             }
         }
     }
@@ -200,5 +194,5 @@ async fn serve(consumer: Consumer<Config>) {
 async fn main() {
     let level = Env::default().default_filter_or("info");
     env_logger::init_from_env(level);
-    recv().await;
+    Box::pin(recv()).await;
 }
