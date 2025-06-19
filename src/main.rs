@@ -1,14 +1,17 @@
 use env_logger::Env;
 use futures::StreamExt;
+use std::collections::HashSet;
 
-use log::info;
 use log::{debug, error};
+use log::{info, warn};
 
 use async_nats::jetstream::consumer::pull::Config;
 use async_nats::jetstream::consumer::{Consumer, DeliverPolicy};
+use async_nats::jetstream::stream::Stream;
 use std::env::args;
 use std::error::Error;
 use std::io::Bytes;
+use std::time::Duration;
 use tokio;
 
 fn help(s: &str) -> String {
@@ -16,14 +19,24 @@ fn help(s: &str) -> String {
     s.to_string()
 }
 
-async fn recv() -> Result<(), Box<dyn Error + Send + Sync>> {
+fn merge_unique(vec1: Vec<String>, vec2: Vec<String>) -> Vec<String> {
+    let mut set: HashSet<String> = HashSet::new();
+    set.extend(vec1);
+    set.extend(vec2);
+    set.into_iter().collect()
+}
+
+async fn recv() /*-> Result<(), Box<dyn Error + Send + Sync>>*/
+{
     let subject = args()
         .nth(1)
-        .ok_or_else(|| help("Param not found : subject"))?;
+        .ok_or_else(|| help("Param not found : subject"))
+        .unwrap();
 
     let stream = args()
         .nth(2)
-        .ok_or_else(|| help("Param not found: stream"))?;
+        .ok_or_else(|| help("Param not found: stream"))
+        .unwrap();
 
     let url = args().nth(3).unwrap_or("nats://localhost:4222".to_string());
 
@@ -32,52 +45,144 @@ async fn recv() -> Result<(), Box<dyn Error + Send + Sync>> {
         subject, stream, url
     );
 
-    let client = async_nats::connect(&url).await?;
-    let jetstream = async_nats::jetstream::new(client);
+    match async_nats::connect(&url).await {
+        Ok(client) => {
+            let mut jetstream = async_nats::jetstream::new(client);
 
-    let mut subjects = vec![subject.to_string()];
-    let mut stream_config = async_nats::jetstream::stream::Config {
-        name: stream.to_string(),
-        subjects: subjects.clone(),
-        ..Default::default()
-    };
-    let stream = jetstream
-        .get_or_create_stream(stream_config.clone())
-        .await?;
+            let mut subjects = vec![subject.to_string()];
+            let mut stream_config = async_nats::jetstream::stream::Config {
+                name: stream.to_string(),
+                subjects: subjects.clone(),
+                ..Default::default()
+            };
+            match jetstream.get_stream(&stream).await {
+                Ok(mut s) => match s.get_info().await {
+                    Ok(info) => {
+                        let mut needs_update = false;
+                        for subject in subjects.clone() {
+                            if !stream_config.subjects.contains(&subject) {
+                                needs_update = true;
+                            }
+                        }
+                        if !needs_update {
+                            info!("Stream {} with subjects: {:?} is ready.", stream, subjects);
+                            continue_with_stream(subject, &mut s).await;
+                            return;
+                        }
 
-    let stream_info = stream.get_info().await?;
+                        stream_config = info.config;
+                        let upd_subjects = merge_unique(
+                            subjects.clone(), //
+                            stream_config.subjects,
+                        );
+                        stream_config.subjects = upd_subjects;
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed to get stream info: {:?}, {}",
+                            e, "using defaults for stream update.",
+                        );
+                    }
+                },
+                Err(e) => {
+                    info!("Stream not found {:?}, trying create it.", e);
+                }
+            }
+            // update or create stream
+            match jetstream.get_or_create_stream(stream_config.clone()).await {
+                Ok(mut stream) => match stream.get_info().await {
+                    Ok(info) => {
+                        let upd_subjects = merge_unique(subjects, info.config.subjects);
+                        stream_config.subjects = upd_subjects;
 
-    for existing_subject in stream_info.config.subjects {
-        if !subjects.contains(&existing_subject) {
-            subjects.push(existing_subject);
+                        match jetstream.update_stream(stream_config).await {
+                            Ok(updated) => {
+                                debug!("Stream updated: {:?}", updated);
+                                continue_with_stream(subject, &mut stream).await;
+                                return;
+                            }
+                            Err(err) => {
+                                error!("Failed to update stream: {}", err);
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        error!("Failed to get stream info: {}", err);
+                    }
+                },
+                Err(err) => {
+                    error!("Failed to get or create stream: {}", err);
+                }
+            }
+        }
+        Err(e) => {
+            error!("Connect error: {:?}", e);
         }
     }
-    stream_config.subjects = subjects;
+}
 
-    //jetstream.update_stream(stream_config).await?;
+/*
+       let consumer = stream
+           .get_or_create_consumer(
+               &durable_name,
+               Config {
+                   durable_name: Some(durable_name.clone()),
+                   filter_subjects: vec![subj.clone()],
+                   ..Default::default()
+               },
+           )
+           .await
+           .map_err(|e| {
+               error!("Failed to create consumer: {}", e);
+               e
+           })?;
 
-    let durable = String::from(format!("consumer_{subject}"));
-    let config = async_nats::jetstream::consumer::pull::Config {
-        durable_name: Some(durable.clone()),
-        deliver_policy: DeliverPolicy::New,
-        filter_subject: subject.to_string(),
-        ..Default::default()
-    };
-    let consumer = stream
-        .get_or_create_consumer(
-            durable.as_str(),
-            config.clone(), //
-        )
-        .await?;
-    serve(consumer).await;
-    Ok(())
+*/
+
+async fn continue_with_stream(subject: String, js: &mut Stream) {
+    let durable_safe = subject.replace('.', "_");
+    let durable = format!("consumer_{durable_safe}");
+
+    match js.get_consumer::<Config>(durable.as_str()).await {
+        Ok(c) => {
+            info!("Consumer found");
+            info!("Created {:?}", c);
+            serve(c).await;
+        }
+        Err(e) => {
+            warn!("Consumer not found: {} {:?}", durable, e);
+            let config = async_nats::jetstream::consumer::pull::Config {
+                durable_name: Some(durable.clone()),
+                filter_subject: subject.to_string(),
+                ..Default::default()
+            };
+            match js.create_consumer(config).await {
+                Ok(c) => {
+                    info!("Created {:?}", c);
+                    serve(c).await;
+                }
+                Err(e) => {
+                    error!("Consumer error1 {:?}", e);
+                }
+            }
+        }
+    }
 }
 
 async fn serve(consumer: Consumer<Config>) {
     loop {
-        match consumer.fetch().max_messages(1).messages().await {
+        //info!(".");
+        match consumer
+            .fetch() //
+            .max_messages(1)
+            .expires(Duration::from_secs(1))
+            .messages()
+            .await
+        {
             Ok(mut messages) => {
+                //info!("..");
                 while let Some(Ok(message)) = messages.next().await {
+                    info!("...");
                     let payload = &message.payload;
                     let ts = message.info().unwrap().published;
                     let nanos = ts.unix_timestamp_nanos() / 1000000;
@@ -95,12 +200,5 @@ async fn serve(consumer: Consumer<Config>) {
 async fn main() {
     let level = Env::default().default_filter_or("info");
     env_logger::init_from_env(level);
-    match recv().await {
-        Ok(_) => {
-            println!("Done");
-        }
-        Err(e) => {
-            error!("Error: {}", e);
-        }
-    }
+    recv().await;
 }
