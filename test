@@ -1,0 +1,1 @@
+cargo run localhost.customer_support.redact-log conversation-stream
