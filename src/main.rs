@@ -1,13 +1,14 @@
 use env_logger::Env;
 use futures::StreamExt;
 
-use log::error;
 use log::info;
+use log::{debug, error};
 
 use async_nats::jetstream::consumer::pull::Config;
 use async_nats::jetstream::consumer::{Consumer, DeliverPolicy};
 use std::env::args;
 use std::error::Error;
+use std::io::Bytes;
 use tokio;
 
 fn help(s: &str) -> String {
@@ -53,7 +54,7 @@ async fn recv() -> Result<(), Box<dyn Error + Send + Sync>> {
     }
     stream_config.subjects = subjects;
 
-    jetstream.update_stream(stream_config).await?;
+    //jetstream.update_stream(stream_config).await?;
 
     let durable = String::from(format!("consumer_{subject}"));
     let config = async_nats::jetstream::consumer::pull::Config {
@@ -74,20 +75,17 @@ async fn recv() -> Result<(), Box<dyn Error + Send + Sync>> {
 
 async fn serve(consumer: Consumer<Config>) {
     loop {
-        if let Ok(mut messages) = consumer //
-            .fetch()
-            .max_messages(1)
-            .messages()
-            .await
-        {
-            while let Some(Ok(message)) = messages.next().await {
-                if let Err(e) = message.ack().await {
-                    error!("Ack failed: {}", e);
+        match consumer.fetch().max_messages(1).messages().await {
+            Ok(mut messages) => {
+                while let Some(Ok(message)) = messages.next().await {
+                    let payload = &message.payload;
+                    let ts = message.info().unwrap().published;
+                    let nanos = ts.unix_timestamp_nanos() / 1000000;
+                    println!("{} {}", nanos, String::from_utf8_lossy(payload.as_ref()));
                 }
-                println!("got message {:?}", message.payload);
-                if message.payload == "\0" {
-                    break;
-                }
+            }
+            Err(e) => {
+                error!("Failed to fetch messages: {}", e);
             }
         }
     }
