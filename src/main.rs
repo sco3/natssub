@@ -73,8 +73,8 @@ async fn recv() /*-> Result<(), Box<dyn Error + Send + Sync>>*/
                     }
                     Err(e) => {
                         error!(
-                            "Failed to get stream info: {:?}, {}",
-                            e, "using defaults for stream update.",
+                            "Failed to get stream info: {e:?}, {}",
+                            "using defaults for stream update.",
                         );
                     }
                 },
@@ -174,13 +174,21 @@ async fn serve(consumer: Consumer<Config>) {
             .await
         {
             Ok(mut messages) => {
-                //info!("..");
                 while let Some(Ok(message)) = messages.next().await {
-                    info!("...");
                     let payload = &message.payload;
                     let ts = message.info().unwrap().published;
-                    let nanos = ts.unix_timestamp_nanos() / 1_000_000;
-                    println!("{} {}", nanos, String::from_utf8_lossy(payload.as_ref()));
+                    let millis = ts.unix_timestamp_nanos() / 1_000_000;
+                    let mut h = String::new();
+                    if let Some(hm) = &message.headers {
+                        h = format!("{hm:?}");
+                    }
+
+                    println!(
+                        "{} | {} | {}",
+                        millis,
+                        String::from_utf8_lossy(payload.as_ref()),
+                        h
+                    );
                 }
             }
             Err(e) => {
