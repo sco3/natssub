@@ -115,24 +115,6 @@ async fn recv() /*-> Result<(), Box<dyn Error + Send + Sync>>*/
     }
 }
 
-/*
-       let consumer = stream
-           .get_or_create_consumer(
-               &durable_name,
-               Config {
-                   durable_name: Some(durable_name.clone()),
-                   filter_subjects: vec![subj.clone()],
-                   ..Default::default()
-               },
-           )
-           .await
-           .map_err(|e| {
-               error!("Failed to create consumer: {}", e);
-               e
-           })?;
-
-*/
-
 async fn continue_with_stream(subject: String, js: &mut Stream) {
     let durable_safe = subject.replace('.', "_");
     let durable = format!("consumer_{durable_safe}");
@@ -176,19 +158,19 @@ async fn serve(consumer: Consumer<Config>) {
             Ok(mut messages) => {
                 while let Some(Ok(message)) = messages.next().await {
                     let payload = &message.payload;
-                    let ts = message.info().unwrap().published;
-                    let millis = ts.unix_timestamp_nanos() / 1_000_000;
+                    let mut millis = 0;
+                    let mut seq = 0;
+                    if let Ok(info) = message.info() {
+                        millis = info.published.unix_timestamp_nanos() / 1_000_000;
+                        seq = info.stream_sequence;
+                    }
+
                     let mut h = String::new();
                     if let Some(hm) = &message.headers {
                         h = format!("{hm:?}");
                     }
-
-                    println!(
-                        "{} | {} | {}",
-                        millis,
-                        String::from_utf8_lossy(payload.as_ref()),
-                        h
-                    );
+                    let s_payload = String::from_utf8_lossy(payload.as_ref());
+                    println!("{millis} | {seq} | {s_payload} | {h}");
                 }
             }
             Err(e) => {
